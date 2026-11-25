@@ -1083,7 +1083,7 @@
       items.forEach(function (i) {
         var p = Math.max(0, Math.min(100, Math.round(i.pct)));
         var cls = p >= 90 || /crit|exceed|block/i.test(i.sev || '') ? ' cct-crit' : p >= 75 || /warn|high/i.test(i.sev || '') ? ' cct-warn' : '';
-        var tip = i.full + ': ' + p + '%' + (i.resets ? ', ' + resetLong(i.resets) : '');
+        var tip = i.full + ': ' + p + '%' + (i.resets ? ', ' + resetLong(i.resets) : '') + (d.plan ? '\nВход Claude Code: ' + d.plan : '');
         html += '<div class="cct-li' + cls + '" title="' + esc(tip) + '"><span class="cct-ll">' + esc(i.label) + '</span>' +
           '<span class="cct-lm"><i style="width:' + p + '%"></i></span><span class="cct-lp">' + p + '%</span>' +
           (i.resets ? '<span class="cct-lr">' + esc(resetShort(i.resets)) + '</span>' : '') + '</div>';
@@ -1092,7 +1092,8 @@
     }
     if (el.getAttribute('data-h') !== html) { el.innerHTML = html; el.setAttribute('data-h', html); lim.fitW = -1; }
     fitLimits();
-    el.title = d.stale ? 'Данные устарели: ' + limitError(d.error) + retryNote(d) + '. Клик — обновить' : 'Клик — обновить';
+    el.title = (d.plan ? 'Вход Claude Code: ' + d.plan + '\n' : '') +
+      (d.stale ? 'Данные устарели: ' + limitError(d.error) + retryNote(d) + '. Клик — обновить' : 'Клик — обновить');
   }
 
   // Узко — сначала убираем время сброса (оно есть в подсказке), чтобы не резались подписи и шкалы.

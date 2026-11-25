@@ -24,6 +24,9 @@ import java.util.concurrent.TimeUnit;
  * Те же данные, что показывает /usage в Claude Code: GET api.anthropic.com/api/oauth/usage с OAuth-токеном
  * из ~/.claude/.credentials.json (его обновляет сам Claude Code). Токен читается при каждом запросе,
  * уходит только в этот запрос и нигде не сохраняется.
+ *
+ * Смена аккаунта (/logout, /login): раз в 5 с проверяем, не изменился ли файл входа. Если токен другой —
+ * сбрасываем паузу после 429 (её заработал прежний вход), убираем чужие цифры и спрашиваем сразу.
  */
 final class LimitsModule {
   private static final String URL = "https://api.anthropic.com/api/oauth/usage";
@@ -41,6 +44,13 @@ final class LimitsModule {
   private static final String RETRY_KEY = "ccGuiTweaks.limitsRetryAt";
   /** Обновление по кнопке, отложенное из-за паузы между запросами. */
   private static ScheduledFuture<?> manual;
+  /** Слежение за файлом входа Claude Code. */
+  private static ScheduledFuture<?> watcher;
+  private static volatile long credStamp = -1;
+  /** Отпечаток токена, которым получены цифры в {@link #last} (сам токен не храним); 0 — неизвестно. */
+  private static volatile int dataToken;
+  /** Отпечаток токена последнего запроса. */
+  private static volatile int seenToken;
 
   private LimitsModule() {}
 
@@ -58,10 +68,16 @@ final class LimitsModule {
       // После перезагрузки плагина не стучимся сразу, если сервер ещё просит подождать.
       delay = Math.max(delay, (retryAt - System.currentTimeMillis() + 999) / 1000);
       task = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(LimitsModule::fetch, delay, iv, TimeUnit.SECONDS);
+      if (watcher == null) {
+        credStamp = stamp();
+        watcher = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(LimitsModule::watch, 5, 5, TimeUnit.SECONDS);
+      }
       if (!wasOn) Tweaks.LOG.info(Tweaks.P + "лимиты включены");
     } else {
       on = false;
+      cancel();
       last = "null";
+      dataToken = 0;
       Tweaks.broadcast("window.__cct&&__cct.limits(null)");
       Tweaks.LOG.info(Tweaks.P + "лимиты выключены");
     }
@@ -75,6 +91,35 @@ final class LimitsModule {
   private static void cancel() {
     if (task != null) task.cancel(false);
     task = null;
+    if (!on && watcher != null) { watcher.cancel(false); watcher = null; }
+  }
+
+  /** Файл входа изменился и токен в нём другой — значит, вошли заново (возможно, другим аккаунтом). */
+  private static void watch() {
+    long st = stamp();
+    if (st == credStamp) return;
+    credStamp = st;
+    Cred c = cred();
+    int id = c == null ? 0 : c.token.hashCode();
+    if (!on || id == seenToken) return;
+    synchronized (LimitsModule.class) {
+      limited = 0;
+      if (retryAt != 0) setRetryAt(0);
+      if (manual != null) manual.cancel(false);
+      manual = null;
+    }
+    Tweaks.LOG.info(Tweaks.P + "лимиты: вход Claude Code сменился" + (c == null ? " (вышли)" : ", план " + c.plan));
+    AppExecutorUtil.getAppExecutorService().execute(() -> fetch(true));
+  }
+
+  /** Время изменения и размер файла входа; -1 — файла нет. */
+  private static long stamp() {
+    try {
+      Path f = credFile();
+      return Files.isRegularFile(f) ? Files.getLastModifiedTime(f).toMillis() * 31 + Files.size(f) : -1;
+    } catch (Exception e) {
+      return -1;
+    }
   }
 
   static void onReady(JBCefBrowserBase b) {
@@ -105,11 +150,14 @@ final class LimitsModule {
       lastFetch = System.currentTimeMillis();
       JsonObject out = new JsonObject();
       String error = null;
+      Cred c = cred();
+      int id = c == null ? 0 : c.token.hashCode();
+      seenToken = id;
       try {
-        String token = token();
-        if (token == null) {
+        if (c == null) {
           error = "nologin";
         } else {
+          String token = c.token;
           HttpResponse<String> r = client.send(HttpRequest.newBuilder(URI.create(URL)).timeout(Duration.ofSeconds(15))
               .header("Authorization", "Bearer " + token)
               .header("anthropic-beta", "oauth-2025-04-20")
@@ -143,7 +191,8 @@ final class LimitsModule {
       if (!on) return;
       if (error != null) {
         // Сеть или сервер подвели — показываем прежние цифры с пометкой; без входа — честно пусто.
-        JsonObject prev = parse(last);
+        // Цифры другого входа (сменили аккаунт) не показываем.
+        JsonObject prev = id == dataToken ? parse(last) : null;
         if (prev != null && !error.equals("nologin") && !error.equals("auth")) {
           prev.addProperty("stale", true);
           out = prev;
@@ -155,7 +204,9 @@ final class LimitsModule {
         limited = 0;
         if (retryAt != 0) setRetryAt(0);
         out.addProperty("at", lastFetch);
+        dataToken = id;
       }
+      if (c != null && c.plan != null) out.addProperty("plan", c.plan);
       last = out.toString();
       Tweaks.broadcast("window.__cct&&__cct.limits(" + last + ")");
     }
@@ -192,18 +243,37 @@ final class LimitsModule {
     }
   }
 
-  private static String token() {
+  private record Cred(String token, String plan) {}
+
+  private static Path credFile() {
+    String dir = System.getenv("CLAUDE_CONFIG_DIR");
+    Path base = dir != null && !dir.isBlank() ? Path.of(dir) : Path.of(System.getProperty("user.home"), ".claude");
+    return base.resolve(".credentials.json");
+  }
+
+  private static Cred cred() {
     try {
-      String dir = System.getenv("CLAUDE_CONFIG_DIR");
-      Path base = dir != null && !dir.isBlank() ? Path.of(dir) : Path.of(System.getProperty("user.home"), ".claude");
-      Path file = base.resolve(".credentials.json");
+      Path file = credFile();
       if (!Files.isRegularFile(file)) return null;
       JsonObject oauth = JsonParser.parseString(Files.readString(file)).getAsJsonObject().getAsJsonObject("claudeAiOauth");
       if (oauth == null || !oauth.has("accessToken")) return null;
       String t = oauth.get("accessToken").getAsString();
-      return t.isBlank() ? null : t;
+      return t.isBlank() ? null : new Cred(t, plan(str(oauth, "subscriptionType"), str(oauth, "rateLimitTier")));
     } catch (Exception e) {
       return null;
     }
+  }
+
+  private static String str(JsonObject o, String k) {
+    JsonElement v = o.get(k);
+    return v != null && v.isJsonPrimitive() ? v.getAsString() : "";
+  }
+
+  /** «max» + «default_claude_max_20x» → «Max 20x»; «pro» → «Pro». */
+  static String plan(String type, String tier) {
+    if (type.isBlank()) return null;
+    String p = Character.toUpperCase(type.charAt(0)) + type.substring(1).toLowerCase();
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("_(\\d+x)$").matcher(tier);
+    return m.find() ? p + " " + m.group(1) : p;
   }
 }
