@@ -1,0 +1,13 @@
+# сборка
+build/
+__pycache__/
+*.pyc
+
+# готовый jar выкладывается в Releases, а не в git
+dist/*.jar
+
+# IDE и система
+.idea/
+*.iml
+.DS_Store
+Thumbs.db

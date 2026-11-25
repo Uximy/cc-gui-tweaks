@@ -1,0 +1,22 @@
+<idea-plugin>
+  <id>local.cc-gui-tweaks</id>
+  <name>CC GUI Tweaks</name>
+  <version>1.0.0</version>
+  <vendor url="https://github.com/Uximy">Uximy</vendor>
+  <idea-version since-build="243"/>
+  <description><![CDATA[
+    Дополнения к чату CC GUI: мини-плеер Spotify (трек, обложка, перемотка, громкость, очередь, текст песни),
+    бар лимитов Claude (5-часовое окно и недельные лимиты), режим производительности (останавливает бесконечные
+    анимации чата) и журнал лагов с выгрузкой логов. Настройки — в настройках CC GUI, раздел «CC GUI Tweaks»;
+    все модули по умолчанию выключены.
+    Работает как отдельное дополнение — CC GUI не изменяется, поэтому его обновления ничего не ломают.
+  ]]></description>
+
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.intellij.modules.jcef</depends>
+
+  <applicationListeners>
+    <listener class="local.ccguitweaks.Starter" topic="com.intellij.ide.AppLifecycleListener"/>
+    <listener class="local.ccguitweaks.Starter" topic="com.intellij.ide.plugins.DynamicPluginListener"/>
+  </applicationListeners>
+</idea-plugin>
